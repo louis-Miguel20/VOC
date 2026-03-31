@@ -1,0 +1,166 @@
+{
+  "name": "VOC Pipeline — 02A Ingesta Google Forms",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "voc-forms-intake",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "voc02a-node-0001",
+      "name": "Webhook — recibir form",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [260, 100],
+      "webhookId": "voc-forms-intake",
+      "notes": "URL del webhook (copiar desde n8n): https://TU_N8N_HOST/webhook/voc-forms-intake\n\nEn Google Forms: Extensiones → Apps Script → pega el script de integración que está documentado abajo.\n\nEste webhook acepta cualquier JSON — el nodo de mapeo se encarga de adaptarlo."
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// ============================================================\n// MAPEADOR UNIVERSAL DE GOOGLE FORMS\n// Google Forms puede enviar datos de muchas formas según\n// cómo se configure el Apps Script de envío. Este nodo\n// maneja los formatos más comunes.\n// ============================================================\nconst crypto = require('crypto');\nconst raw = $input.first().json;\nconst plataforma = $vars.PLATAFORMA_NOMBRE || 'Demo';\n\n// --- Detectar formato de payload ---\n// Formato A: Apps Script envía { responses: { 'Pregunta': 'Respuesta', ... } }\n// Formato B: Apps Script envía campos planos directamente\n// Formato C: Google Forms Zapier-style con 'entry.XXXXX' keys\nconst data = raw.responses || raw.entry || raw;\n\nconst norm = (str) =>\n  String(str)\n    .toLowerCase()\n    .normalize('NFD')\n    .replace(/[\\u0300-\\u036f]/g, '')\n    .trim();\n\nconst findVal = (obj, claves) => {\n  for (const clave of claves) {\n    const key = Object.keys(obj).find(k => norm(k).includes(clave));\n    if (key && obj[key] !== undefined && String(obj[key]).trim() !== '') {\n      return String(obj[key]).trim();\n    }\n  }\n  return null;\n};\n\n// Texto de la reseña\nconst texto = findVal(data, [\n  'comentario', 'resena', 'texto', 'opinion', 'feedback',\n  'descripcion', 'mensaje', 'experiencia', 'review', 'content'\n]);\n\nif (!texto || texto.length < 5) {\n  throw new Error('[VOC Forms] Payload sin campo de texto identificable: ' + JSON.stringify(Object.keys(data)));\n}\n\n// Calificación / estrellas\nconst calRaw = findVal(data, [\n  'calificacion', 'rating', 'estrellas', 'puntuacion', 'stars', 'nota', 'score'\n]);\nconst calificacion = calRaw ? (parseFloat(calRaw) || '') : '';\n\n// Autor / nombre del cliente\nconst autor = findVal(data, [\n  'nombre', 'name', 'autor', 'paciente', 'cliente', 'huesped', 'usuario'\n]) || 'Anónimo';\n\n// Servicio / área específica (info extra que no tienen Google Maps)\nconst servicio = findVal(data, [\n  'servicio', 'area', 'departamento', 'especialidad', 'producto', 'sede'\n]) || '';\n\n// Email del autor (para alerta de seguimiento si es queja)\nconst emailAutor = findVal(data, ['email', 'correo', 'mail']) || '';\n\n// Fecha de envío del form\nconst fechaResena = new Date().toISOString().split('T')[0];\n\n// Hash de deduplicación\nconst textoParaHash = texto.toLowerCase().replace(/\\s+/g, ' ');\nconst idHash = crypto\n  .createHash('md5')\n  .update(textoParaHash)\n  .digest('hex')\n  .substring(0, 16);\n\nreturn [{\n  json: {\n    id:                   idHash,\n    texto_original:       texto,\n    idioma:               'pendiente_deteccion',\n    fuente:               'google_forms',\n    plataforma:           plataforma,\n    fecha_resena:         fechaResena,\n    fecha_ingesta:        fechaResena,\n    calificacion_estrella: calificacion,\n    autor:                autor,\n    url_origen:           '',\n    estado_procesado:     'pendiente',\n    // Campos extra del form (útiles para enrutamiento de alertas)\n    _servicio_form:       servicio,\n    _email_autor:         emailAutor,\n    // Campos IA vacíos\n    sentimiento:          '',\n    categoria:            '',\n    score_urgencia:       '',\n    entidades_clave:      '',\n    resumen_ia:           '',\n    accion_sugerida:      ''\n  }\n}];\n"
+      },
+      "id": "voc02a-node-0002",
+      "name": "Mapear campos del form",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [260, 260]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "voc-cond-stars",
+              "leftValue": "={{ $json.calificacion_estrella }}",
+              "rightValue": 3,
+              "operator": {
+                "type": "number",
+                "operation": "lte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "voc02a-node-0003",
+      "name": "¿Calificación ≤ 3?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [260, 420],
+      "notes": "TRUE: calificación ≤ 3 → enviar pre-alerta y guardar. FALSE: calificación normal → solo guardar. Las reseñas sin calificación (formularios abiertos) van por la rama FALSE."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": \"*Alerta VOC — Reseña negativa recibida vía formulario*\",\n  \"attachments\": [\n    {\n      \"color\": \"#E24B4A\",\n      \"fields\": [\n        { \"title\": \"Plataforma\", \"value\": \"{{ $json.plataforma }}\", \"short\": true },\n        { \"title\": \"Calificación\", \"value\": \"{{ $json.calificacion_estrella }}/5 estrellas\", \"short\": true },\n        { \"title\": \"Servicio\", \"value\": \"{{ $json._servicio_form || 'No especificado' }}\", \"short\": true },\n        { \"title\": \"Autor\", \"value\": \"{{ $json.autor }}\", \"short\": true },\n        { \"title\": \"Texto\", \"value\": \"{{ $json.texto_original.substring(0, 300) }}{{ $json.texto_original.length > 300 ? '...' : '' }}\", \"short\": false }\n      ],\n      \"footer\": \"VOC Pipeline · Pre-alerta (análisis IA pendiente)\",\n      \"ts\": {{ Math.floor(Date.now() / 1000) }}\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "voc02a-node-0004",
+      "name": "Slack — pre-alerta negativa",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [520, 560],
+      "notes": "CONFIGURAR: En n8n > Settings > Variables, definir SLACK_WEBHOOK_URL con la URL del incoming webhook de tu workspace de Slack.\n\nEsta es una PRE-alerta (sin análisis IA aún). El análisis completo llega en la alerta de Etapa 3.\n\nSi no tienes Slack, cambia el nodo por Email o simplemente deshabilítalo."
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $vars.MASTER_SHEET_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Master",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [
+            { "id": "id",                    "displayName": "id",                    "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "texto_original",        "displayName": "texto_original",        "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "idioma",                "displayName": "idioma",                "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "fuente",                "displayName": "fuente",                "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "plataforma",            "displayName": "plataforma",            "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "fecha_resena",          "displayName": "fecha_resena",          "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "fecha_ingesta",         "displayName": "fecha_ingesta",         "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "calificacion_estrella", "displayName": "calificacion_estrella", "required": false, "defaultMatch": false, "display": true, "type": "number" },
+            { "id": "autor",                 "displayName": "autor",                 "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "url_origen",            "displayName": "url_origen",            "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "estado_procesado",      "displayName": "estado_procesado",      "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "sentimiento",           "displayName": "sentimiento",           "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "categoria",             "displayName": "categoria",             "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "score_urgencia",        "displayName": "score_urgencia",        "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "entidades_clave",       "displayName": "entidades_clave",       "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "resumen_ia",            "displayName": "resumen_ia",            "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "accion_sugerida",       "displayName": "accion_sugerida",       "required": false, "defaultMatch": false, "display": true, "type": "string" }
+          ]
+        },
+        "options": { "cellFormat": "USER_ENTERED" }
+      },
+      "id": "voc02a-node-0005",
+      "name": "Escribir en Master Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.2,
+      "position": [260, 700],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REEMPLAZAR_CON_TU_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"status\": \"ok\", \"id\": \"{{ $('Mapear campos del form').first().json.id }}\" }",
+        "options": {}
+      },
+      "id": "voc02a-node-0006",
+      "name": "Responder 200 OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [260, 860],
+      "notes": "Responde 200 al Apps Script de Google Forms para confirmar recepción. Sin este nodo, el script de Forms recibirá timeout y reintentará el envío."
+    }
+  ],
+  "connections": {
+    "Webhook — recibir form": {
+      "main": [[{ "node": "Mapear campos del form", "type": "main", "index": 0 }]]
+    },
+    "Mapear campos del form": {
+      "main": [[{ "node": "¿Calificación ≤ 3?", "type": "main", "index": 0 }]]
+    },
+    "¿Calificación ≤ 3?": {
+      "main": [
+        [{ "node": "Slack — pre-alerta negativa", "type": "main", "index": 0 }],
+        [{ "node": "Escribir en Master Sheet",    "type": "main", "index": 0 }]
+      ]
+    },
+    "Slack — pre-alerta negativa": {
+      "main": [[{ "node": "Escribir en Master Sheet", "type": "main", "index": 0 }]]
+    },
+    "Escribir en Master Sheet": {
+      "main": [[{ "node": "Responder 200 OK", "type": "main", "index": 0 }]]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "tags": [{ "name": "VOC Pipeline" }, { "name": "Ingesta" }],
+  "active": false,
+  "id": "voc-pipeline-02a-forms",
+  "_docs_apps_script": "SCRIPT PARA GOOGLE FORMS (pegar en Apps Script del form):\n\nfunction onFormSubmit(e) {\n  const responses = {};\n  e.response.getItemResponses().forEach(r => {\n    responses[r.getItem().getTitle()] = r.getResponse();\n  });\n  const payload = JSON.stringify({ responses: responses, form_id: e.source.getId() });\n  UrlFetchApp.fetch('https://TU_N8N_HOST/webhook/voc-forms-intake', {\n    method: 'post',\n    contentType: 'application/json',\n    payload: payload\n  });\n}\n// Trigger: Editar → Activadores → onFormSubmit → Al enviar formulario"
+}

@@ -1,0 +1,126 @@
+{
+  "metadata": {
+    "plataforma": "LOGYCA / LAB",
+    "fecha_analisis": "2026-03-31T14:46:05.229725",
+    "total_procesadas": 2
+  },
+  "kpis_globales": {
+    "total_resenas": 2,
+    "positivos": 0,
+    "negativos": 2,
+    "neutrales": 0,
+    "tasa_positiva_pct": 0.0,
+    "nps_estimado": -100.0,
+    "avg_rating": 1.0,
+    "alertas_activas": 2,
+    "alertas_criticas": 0,
+    "fecha_analisis": "2026-03-31T14:46:05.237363"
+  },
+  "por_categoria": [
+    {
+      "categoria": "logistica_visita",
+      "label": "Logística de visita",
+      "total": 1,
+      "positivos": 0,
+      "neutrales": 0,
+      "negativos": 1,
+      "avg_urgencia": 4.0,
+      "pct_del_total": 50.0
+    },
+    {
+      "categoria": "atencion_equipo",
+      "label": "Atención del equipo",
+      "total": 1,
+      "positivos": 0,
+      "neutrales": 0,
+      "negativos": 1,
+      "avg_urgencia": 4.0,
+      "pct_del_total": 50.0
+    }
+  ],
+  "tendencias": {
+    "por_semana": [
+      {
+        "semana": "2026-03-30/2026-04-05",
+        "total": 2,
+        "positivos": 0,
+        "neutrales": 0,
+        "negativos": 2
+      }
+    ],
+    "categorias_escalando": []
+  },
+  "alertas_criticas": [
+    {
+      "id": "fe25b8a6e3ad94a6",
+      "texto_original": "no habia sillas",
+      "fuente": "google_forms",
+      "categoria": "logistica_visita",
+      "label": "Logística de visita",
+      "sentimiento": "negativo",
+      "score_urgencia": 4,
+      "resumen_ia": "Falta de sillas durante la visita.",
+      "accion_sugerida": "Proveer suficientes sillas para futuras visitas.",
+      "entidades_clave": "sillas",
+      "fecha_resena": "2026-03-30",
+      "autor": "luis"
+    },
+    {
+      "id": "a6b9e212a3e82f12",
+      "texto_original": "me impresionó que no haya bebidas, que no le ofrescan nada para beber",
+      "fuente": "google_forms",
+      "categoria": "atencion_equipo",
+      "label": "Atención del equipo",
+      "sentimiento": "negativo",
+      "score_urgencia": 4,
+      "resumen_ia": "Falta de bebidas durante la visita.",
+      "accion_sugerida": "Incluir opciones de bebidas para los visitantes.",
+      "entidades_clave": "beber, bebidas",
+      "fecha_resena": "2026-03-30",
+      "autor": "pedro alvares"
+    }
+  ],
+  "top_entidades": [
+    {
+      "entidad": "sillas",
+      "menciones": 1
+    },
+    {
+      "entidad": "beber",
+      "menciones": 1
+    },
+    {
+      "entidad": "bebidas",
+      "menciones": 1
+    }
+  ],
+  "comparativa_semanal": {},
+  "resenas_recientes": [
+    {
+      "id": "fe25b8a6e3ad94a6",
+      "texto_original": "no habia sillas",
+      "fuente": "google_forms",
+      "categoria": "logistica_visita",
+      "label": "Logística de visita",
+      "sentimiento": "negativo",
+      "score_urgencia": 4,
+      "resumen_ia": "Falta de sillas durante la visita.",
+      "calificacion": 1,
+      "fecha_resena": "2026-03-30",
+      "autor": "luis"
+    },
+    {
+      "id": "a6b9e212a3e82f12",
+      "texto_original": "me impresionó que no haya bebidas, que no le ofrescan nada para beber",
+      "fuente": "google_forms",
+      "categoria": "atencion_equipo",
+      "label": "Atención del equipo",
+      "sentimiento": "negativo",
+      "score_urgencia": 4,
+      "resumen_ia": "Falta de bebidas durante la visita.",
+      "calificacion": 1,
+      "fecha_resena": "2026-03-30",
+      "autor": "pedro alvares"
+    }
+  ]
+}

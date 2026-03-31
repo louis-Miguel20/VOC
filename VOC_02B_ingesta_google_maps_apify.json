@@ -1,0 +1,296 @@
+{
+  "name": "VOC Pipeline — 02B Ingesta Google Maps (Apify)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 7 */3 * *"
+            }
+          ]
+        }
+      },
+      "id": "voc02b-node-0001",
+      "name": "Scheduler — cada 3 días",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [260, 80],
+      "notes": "Cada 3 días a las 7am. NO correr diariamente — Google Maps detecta scraping frecuente y Apify agota créditos. 3 días es el balance óptimo para el free tier de Apify (10 USD/mes de crédito)."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.apify.com/v2/acts/compass~google-maps-reviews-scraper/runs?token={{ $vars.APIFY_TOKEN }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"startUrls\": {{ $vars.GOOGLE_MAPS_URLS }},\n  \"maxReviews\": {{ $vars.APIFY_MAX_REVIEWS || 50 }},\n  \"reviewsSort\": \"newestFirst\",\n  \"language\": \"es\",\n  \"personalDataOptions\": \"scrapeAndReturn\"\n}",
+        "options": {}
+      },
+      "id": "voc02b-node-0002",
+      "name": "Lanzar actor Apify",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [260, 220],
+      "notes": "CONFIGURAR EN n8n > Settings > Variables:\n- APIFY_TOKEN: tu token de Apify (gratuito en apify.com/account/integrations)\n- GOOGLE_MAPS_URLS: JSON array de URLs, ej: [{\"url\":\"https://www.google.com/maps/place/TU_NEGOCIO\"}]\n- APIFY_MAX_REVIEWS: número máximo por corrida (default 50 para no agotar créditos)\n\nEl actor 'compass/google-maps-reviews-scraper' es gratuito en Apify."
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Extraer el runId del response de Apify para hacer polling\nconst response = $input.first().json;\nconst runId = response.data?.id;\nif (!runId) throw new Error('[VOC Apify] No se obtuvo runId: ' + JSON.stringify(response));\nconsole.log('[VOC Apify] Run iniciado:', runId);\nreturn [{ json: { runId, status: 'RUNNING' } }];\n"
+      },
+      "id": "voc02b-node-0003",
+      "name": "Extraer runId",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [260, 360]
+    },
+    {
+      "parameters": {
+        "amount": 90,
+        "unit": "seconds"
+      },
+      "id": "voc02b-node-0004",
+      "name": "Esperar 90s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [260, 480],
+      "notes": "90 segundos es suficiente para que Apify scrape ≤50 reseñas. Si usas maxReviews > 200, aumentar a 180-240s."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.apify.com/v2/acts/compass~google-maps-reviews-scraper/runs/{{ $('Extraer runId').first().json.runId }}?token={{ $vars.APIFY_TOKEN }}",
+        "options": {}
+      },
+      "id": "voc02b-node-0005",
+      "name": "Verificar estado del run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [260, 620]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "voc-cond-apify",
+              "leftValue": "={{ $json.data.status }}",
+              "rightValue": "SUCCEEDED",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "voc02b-node-0006",
+      "name": "¿Apify terminó?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [260, 760],
+      "notes": "TRUE: SUCCEEDED → descargar resultados. FALSE: aún corriendo o error → terminar con log."
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.apify.com/v2/acts/compass~google-maps-reviews-scraper/runs/{{ $('Extraer runId').first().json.runId }}/dataset/items?token={{ $vars.APIFY_TOKEN }}&format=json&clean=true",
+        "options": {}
+      },
+      "id": "voc02b-node-0007",
+      "name": "Descargar resultados Apify",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [520, 900]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// ============================================================\n// NORMALIZADOR DE RESULTADOS DE APIFY GOOGLE MAPS\n// El actor retorna un array de objetos con estructura fija.\n// Los mapeamos al schema del Master Sheet.\n// ============================================================\nconst crypto = require('crypto');\nconst plataforma = $vars.PLATAFORMA_NOMBRE || 'Demo';\n\n// Apify retorna el array directamente o dentro de un wrapper\nconst rawInput = $input.first().json;\nconst reviews = Array.isArray(rawInput) ? rawInput : (rawInput.items || []);\n\nconsole.log(`[VOC Apify Normalizer] Reseñas recibidas: ${reviews.length}`);\n\nconst normalized = [];\n\nfor (const r of reviews) {\n  // Apify usa estos campos para Google Maps Reviews:\n  // text, stars, publishedAtDate, reviewerName, reviewUrl, placeUrl\n  const texto = String(r.text || r.snippet || r.body || '').trim();\n  if (texto.length < 5) continue; // saltar reseñas vacías o solo con foto\n\n  const textoParaHash = texto.toLowerCase().replace(/\\s+/g, ' ');\n  const idHash = crypto\n    .createHash('md5')\n    .update(textoParaHash)\n    .digest('hex')\n    .substring(0, 16);\n\n  // Fecha de publicación\n  let fechaResena = '';\n  if (r.publishedAtDate) {\n    try {\n      fechaResena = new Date(r.publishedAtDate).toISOString().split('T')[0];\n    } catch {\n      fechaResena = String(r.publishedAtDate);\n    }\n  }\n\n  normalized.push({\n    json: {\n      id:                    idHash,\n      texto_original:        texto,\n      idioma:                'pendiente_deteccion',\n      fuente:                'google_maps',\n      plataforma:            r.placeName || plataforma,\n      fecha_resena:          fechaResena,\n      fecha_ingesta:         new Date().toISOString().split('T')[0],\n      calificacion_estrella: r.stars || '',\n      autor:                 r.reviewerName || 'Anónimo',\n      url_origen:            r.reviewUrl || r.placeUrl || '',\n      estado_procesado:      'pendiente',\n      sentimiento:           '',\n      categoria:             '',\n      score_urgencia:        '',\n      entidades_clave:       '',\n      resumen_ia:            '',\n      accion_sugerida:       ''\n    }\n  });\n}\n\nconsole.log(`[VOC Apify Normalizer] Válidas para Master: ${normalized.length}`);\nreturn normalized;\n"
+      },
+      "id": "voc02b-node-0008",
+      "name": "Normalizar resultados Apify",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 1040]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $vars.MASTER_SHEET_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Master",
+          "mode": "name"
+        },
+        "options": { "headerRow": 1 }
+      },
+      "id": "voc02b-node-0009",
+      "name": "Leer IDs existentes en Master",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.2,
+      "position": [520, 1180],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REEMPLAZAR_CON_TU_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Deduplicar: solo pasar las reseñas de Maps que no estén en el Master\nconst masterItems = $input.all();\nconst existingIds = new Set(\n  masterItems.map(i => i.json.id).filter(id => id && String(id).trim() !== '')\n);\n\nconst fromApify = $('Normalizar resultados Apify').all();\nconst nuevas = fromApify.filter(i => !existingIds.has(i.json.id));\n\nconsole.log(`[VOC Dedup Maps] Master IDs: ${existingIds.size} | Apify: ${fromApify.length} | Nuevas: ${nuevas.length}`);\n\nif (nuevas.length === 0) {\n  return [{ json: { _voc_empty: true, mensaje: 'Sin reseñas nuevas de Google Maps' } }];\n}\nreturn nuevas;\n"
+      },
+      "id": "voc02b-node-0010",
+      "name": "Deduplicar Maps",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, 1320]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "voc-cond-empty",
+              "leftValue": "={{ $json._voc_empty }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "notEquals" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "voc02b-node-0011",
+      "name": "¿Hay nuevas reseñas?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [520, 1460]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $vars.MASTER_SHEET_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Master",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [
+            { "id": "id",                    "displayName": "id",                    "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "texto_original",        "displayName": "texto_original",        "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "idioma",                "displayName": "idioma",                "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "fuente",                "displayName": "fuente",                "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "plataforma",            "displayName": "plataforma",            "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "fecha_resena",          "displayName": "fecha_resena",          "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "fecha_ingesta",         "displayName": "fecha_ingesta",         "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "calificacion_estrella", "displayName": "calificacion_estrella", "required": false, "defaultMatch": false, "display": true, "type": "number" },
+            { "id": "autor",                 "displayName": "autor",                 "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "url_origen",            "displayName": "url_origen",            "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "estado_procesado",      "displayName": "estado_procesado",      "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "sentimiento",           "displayName": "sentimiento",           "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "categoria",             "displayName": "categoria",             "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "score_urgencia",        "displayName": "score_urgencia",        "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "entidades_clave",       "displayName": "entidades_clave",       "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "resumen_ia",            "displayName": "resumen_ia",            "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "accion_sugerida",       "displayName": "accion_sugerida",       "required": false, "defaultMatch": false, "display": true, "type": "string" }
+          ]
+        },
+        "options": { "cellFormat": "USER_ENTERED" }
+      },
+      "id": "voc02b-node-0012",
+      "name": "Escribir en Master Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.2,
+      "position": [760, 1600],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REEMPLAZAR_CON_TU_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "voc02b-node-0013",
+      "name": "Sin cambios — OK",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [260, 1600]
+    },
+    {
+      "parameters": {},
+      "id": "voc02b-node-0014",
+      "name": "Run fallido — log y terminar",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [0, 900],
+      "notes": "Si Apify no retorna SUCCEEDED, el workflow termina aquí. Revisar el run en apify.com/console para diagnóstico."
+    }
+  ],
+  "connections": {
+    "Scheduler — cada 3 días": {
+      "main": [[{ "node": "Lanzar actor Apify", "type": "main", "index": 0 }]]
+    },
+    "Lanzar actor Apify": {
+      "main": [[{ "node": "Extraer runId", "type": "main", "index": 0 }]]
+    },
+    "Extraer runId": {
+      "main": [[{ "node": "Esperar 90s", "type": "main", "index": 0 }]]
+    },
+    "Esperar 90s": {
+      "main": [[{ "node": "Verificar estado del run", "type": "main", "index": 0 }]]
+    },
+    "Verificar estado del run": {
+      "main": [[{ "node": "¿Apify terminó?", "type": "main", "index": 0 }]]
+    },
+    "¿Apify terminó?": {
+      "main": [
+        [{ "node": "Descargar resultados Apify",   "type": "main", "index": 0 }],
+        [{ "node": "Run fallido — log y terminar", "type": "main", "index": 0 }]
+      ]
+    },
+    "Descargar resultados Apify": {
+      "main": [[{ "node": "Normalizar resultados Apify", "type": "main", "index": 0 }]]
+    },
+    "Normalizar resultados Apify": {
+      "main": [[{ "node": "Leer IDs existentes en Master", "type": "main", "index": 0 }]]
+    },
+    "Leer IDs existentes en Master": {
+      "main": [[{ "node": "Deduplicar Maps", "type": "main", "index": 0 }]]
+    },
+    "Deduplicar Maps": {
+      "main": [[{ "node": "¿Hay nuevas reseñas?", "type": "main", "index": 0 }]]
+    },
+    "¿Hay nuevas reseñas?": {
+      "main": [
+        [{ "node": "Escribir en Master Sheet", "type": "main", "index": 0 }],
+        [{ "node": "Sin cambios — OK",          "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "tags": [{ "name": "VOC Pipeline" }, { "name": "Ingesta" }],
+  "active": false,
+  "id": "voc-pipeline-02b-maps"
+}

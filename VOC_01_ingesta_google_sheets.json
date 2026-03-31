@@ -1,0 +1,261 @@
+{
+  "name": "VOC Pipeline — 01 Ingesta Google Sheets",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 6 * * *"
+            }
+          ]
+        }
+      },
+      "id": "voc01-node-0001",
+      "name": "Scheduler — 6am diario",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [260, 100],
+      "notes": "Corre diariamente a las 6am. Para testear, usa el botón 'Test workflow' manualmente."
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $vars.SOURCE_SHEET_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $vars.SOURCE_SHEET_TAB }}",
+          "mode": "name"
+        },
+        "options": {
+          "headerRow": 1
+        }
+      },
+      "id": "voc01-node-0002",
+      "name": "Leer fuente — Sheets existente",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.2,
+      "position": [260, 260],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REEMPLAZAR_CON_TU_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      },
+      "notes": "CONFIGURAR: En n8n > Settings > Variables, definir SOURCE_SHEET_ID (ID del Google Sheet fuente) y SOURCE_SHEET_TAB (nombre de la pestaña, ej: Reseñas). El ID del sheet está en la URL: docs.google.com/spreadsheets/d/ESTE_ES_EL_ID/edit"
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// ============================================================\n// NORMALIZADOR + GENERADOR DE ID HASH\n// Detecta columnas flexiblemente sin importar cómo las llamó\n// el cliente en su sheet original.\n// ============================================================\nconst crypto = require('crypto');\nconst items = $input.all();\nconst plataforma = $vars.PLATAFORMA_NOMBRE || 'Demo';\n\n// Normaliza strings para comparar nombres de columna\nconst norm = (str) =>\n  String(str)\n    .toLowerCase()\n    .normalize('NFD')\n    .replace(/[\\u0300-\\u036f]/g, '')\n    .trim();\n\n// Busca el valor del primer key que haga match parcial con alguna de las claves\nconst findCol = (raw, claves) => {\n  for (const clave of claves) {\n    const key = Object.keys(raw).find(k => norm(k).includes(clave));\n    if (key !== undefined && raw[key] !== undefined && raw[key] !== '') {\n      return raw[key];\n    }\n  }\n  return null;\n};\n\nconst normalized = [];\n\nfor (const item of items) {\n  const raw = item.json;\n\n  // --- Texto principal (campo más importante) ---\n  const textoRaw = findCol(raw, [\n    'texto', 'resena', 'comentario', 'review',\n    'opinion', 'feedback', 'mensaje', 'descripcion', 'content'\n  ]);\n  if (!textoRaw || String(textoRaw).trim().length < 5) continue; // saltar filas vacías\n\n  const textoClean = String(textoRaw).trim();\n\n  // --- ID hash (MD5 de texto normalizado, 16 chars) ---\n  // Esto garantiza deduplicación cross-fuente: la misma reseña\n  // copiada en dos sheets distintos genera el mismo ID.\n  const textoParaHash = textoClean.toLowerCase().replace(/\\s+/g, ' ');\n  const idHash = crypto\n    .createHash('md5')\n    .update(textoParaHash)\n    .digest('hex')\n    .substring(0, 16);\n\n  // --- Calificación (1-5) ---\n  const calRaw = findCol(raw, [\n    'calificacion', 'rating', 'stars', 'estrellas',\n    'nota', 'puntuacion', 'score', 'puntaje'\n  ]);\n  const calificacion = calRaw ? (parseFloat(String(calRaw)) || '') : '';\n\n  // --- Fecha de la reseña ---\n  const fechaRaw = findCol(raw, [\n    'fecha', 'date', 'created', 'timestamp',\n    'creado', 'when', 'publicado'\n  ]);\n  let fechaResena = '';\n  if (fechaRaw) {\n    // Intentar parsear y normalizar a YYYY-MM-DD\n    try {\n      const d = new Date(fechaRaw);\n      if (!isNaN(d.getTime())) {\n        fechaResena = d.toISOString().split('T')[0];\n      } else {\n        fechaResena = String(fechaRaw).trim(); // dejar como viene si no parsea\n      }\n    } catch {\n      fechaResena = String(fechaRaw).trim();\n    }\n  }\n\n  // --- Autor ---\n  const autorRaw = findCol(raw, [\n    'autor', 'nombre', 'name', 'author',\n    'usuario', 'user', 'cliente', 'paciente'\n  ]);\n  const autor = autorRaw ? String(autorRaw).trim() : 'Anónimo';\n\n  // --- URL origen ---\n  const urlRaw = findCol(raw, ['url', 'link', 'enlace', 'fuente_url']);\n  const urlOrigen = urlRaw ? String(urlRaw).trim() : '';\n\n  // --- Construir objeto final con schema del Master Sheet ---\n  normalized.push({\n    json: {\n      id:                   idHash,\n      texto_original:       textoClean,\n      idioma:               'pendiente_deteccion',  // OpenAI lo detecta en Etapa 3\n      fuente:               'sheets_existente',\n      plataforma:           plataforma,\n      fecha_resena:         fechaResena,\n      fecha_ingesta:        new Date().toISOString().split('T')[0],\n      calificacion_estrella: calificacion,\n      autor:                autor,\n      url_origen:           urlOrigen,\n      estado_procesado:     'pendiente',\n      // Campos de IA — vacíos hasta Etapa 3:\n      sentimiento:          '',\n      categoria:            '',\n      score_urgencia:       '',\n      entidades_clave:      '',\n      resumen_ia:           '',\n      accion_sugerida:      ''\n    }\n  });\n}\n\n// Log de diagnóstico (visible en n8n execution log)\nconsole.log(`[VOC Normalizer] Input: ${items.length} filas | Output: ${normalized.length} válidas`);\n\nreturn normalized;\n"
+      },
+      "id": "voc01-node-0003",
+      "name": "Normalizar — ID + Schema",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [260, 420],
+      "notes": "Detecta columnas automáticamente (funciona con 'Reseña', 'Review', 'Comentario', 'Texto', etc). Genera un ID hash MD5 de 16 chars del texto para deduplicación idempotente."
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $vars.MASTER_SHEET_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Master",
+          "mode": "name"
+        },
+        "options": {
+          "headerRow": 1
+        }
+      },
+      "id": "voc01-node-0004",
+      "name": "Leer Master — IDs existentes",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.2,
+      "position": [260, 580],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REEMPLAZAR_CON_TU_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      },
+      "notes": "CONFIGURAR: En n8n > Settings > Variables, definir MASTER_SHEET_ID. Puede ser el mismo sheet con pestaña diferente (Master) o un sheet separado. La primera vez que corras el workflow esta pestaña estará vacía y retornará 0 items — eso es correcto."
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// ============================================================\n// DEDUPLICADOR\n// Compara los IDs normalizados contra los IDs ya en el Master.\n// Solo pasan las reseñas nuevas.\n// ============================================================\n\n// Items del nodo anterior (Master Sheet con IDs existentes)\nconst masterItems = $input.all();\nconst existingIds = new Set(\n  masterItems\n    .map(i => i.json.id)\n    .filter(id => id && String(id).trim() !== '')\n);\n\nconsole.log(`[VOC Dedup] IDs en Master: ${existingIds.size}`);\n\n// Items del nodo de normalización\nconst allNormalized = $('Normalizar — ID + Schema').all();\nconst nuevas = allNormalized.filter(i => !existingIds.has(i.json.id));\n\nconsole.log(`[VOC Dedup] Total normalizados: ${allNormalized.length} | Nuevos: ${nuevas.length} | Duplicados omitidos: ${allNormalized.length - nuevas.length}`);\n\nif (nuevas.length === 0) {\n  // Retornar señal de \"sin novedades\" para el nodo IF\n  return [{ json: { _voc_empty: true, count: 0, mensaje: 'Sin reseñas nuevas — Master Sheet ya actualizado' } }];\n}\n\nreturn nuevas;\n"
+      },
+      "id": "voc01-node-0005",
+      "name": "Deduplicar — filtrar existentes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [260, 740],
+      "notes": "Usa $('Normalizar — ID + Schema').all() para acceder a los items normalizados sin que el nodo de lectura del Master los reemplace. Esto es el patrón correcto en n8n para merge manual."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "voc-cond-001",
+              "leftValue": "={{ $json._voc_empty }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "voc01-node-0006",
+      "name": "¿Hay reseñas nuevas?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [260, 900],
+      "notes": "TRUE (salida 0): hay reseñas nuevas → escribir en Master. FALSE (salida 1): nada nuevo → terminar limpiamente."
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $vars.MASTER_SHEET_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Master",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [
+            { "id": "id",                    "displayName": "id",                    "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "texto_original",        "displayName": "texto_original",        "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "idioma",                "displayName": "idioma",                "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "fuente",                "displayName": "fuente",                "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "plataforma",            "displayName": "plataforma",            "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "fecha_resena",          "displayName": "fecha_resena",          "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "fecha_ingesta",         "displayName": "fecha_ingesta",         "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "calificacion_estrella", "displayName": "calificacion_estrella", "required": false, "defaultMatch": false, "display": true, "type": "number" },
+            { "id": "autor",                 "displayName": "autor",                 "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "url_origen",            "displayName": "url_origen",            "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "estado_procesado",      "displayName": "estado_procesado",      "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "sentimiento",           "displayName": "sentimiento",           "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "categoria",             "displayName": "categoria",             "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "score_urgencia",        "displayName": "score_urgencia",        "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "entidades_clave",       "displayName": "entidades_clave",       "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "resumen_ia",            "displayName": "resumen_ia",            "required": false, "defaultMatch": false, "display": true, "type": "string" },
+            { "id": "accion_sugerida",       "displayName": "accion_sugerida",       "required": false, "defaultMatch": false, "display": true, "type": "string" }
+          ]
+        },
+        "options": {
+          "cellFormat": "USER_ENTERED"
+        }
+      },
+      "id": "voc01-node-0007",
+      "name": "Escribir en Master Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.2,
+      "position": [520, 1060],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REEMPLAZAR_CON_TU_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      },
+      "notes": "Append puro — la deduplicación ya ocurrió upstream, no necesita upsert. autoMapInputData mapea las columnas por nombre automáticamente."
+    },
+    {
+      "parameters": {},
+      "id": "voc01-node-0008",
+      "name": "Sin cambios — OK",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [0, 1060],
+      "notes": "Termina limpiamente cuando no hay reseñas nuevas. El execution log mostrará éxito."
+    }
+  ],
+  "connections": {
+    "Scheduler — 6am diario": {
+      "main": [
+        [
+          { "node": "Leer fuente — Sheets existente", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Leer fuente — Sheets existente": {
+      "main": [
+        [
+          { "node": "Normalizar — ID + Schema", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Normalizar — ID + Schema": {
+      "main": [
+        [
+          { "node": "Leer Master — IDs existentes", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Leer Master — IDs existentes": {
+      "main": [
+        [
+          { "node": "Deduplicar — filtrar existentes", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Deduplicar — filtrar existentes": {
+      "main": [
+        [
+          { "node": "¿Hay reseñas nuevas?", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "¿Hay reseñas nuevas?": {
+      "main": [
+        [
+          { "node": "Escribir en Master Sheet", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Sin cambios — OK", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    { "name": "VOC Pipeline" },
+    { "name": "Ingesta" }
+  ],
+  "active": false,
+  "id": "voc-pipeline-01-sheets"
+}

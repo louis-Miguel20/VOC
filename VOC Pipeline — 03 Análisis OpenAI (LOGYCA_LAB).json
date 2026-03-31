@@ -1,0 +1,682 @@
+{
+  "name": "VOC Pipeline — 03 Análisis OpenAI (LOGYCA/LAB)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * *"
+            }
+          ]
+        }
+      },
+      "id": "ac419dae-fc66-4255-9969-81026ca666cf",
+      "name": "Scheduler — 8am diario",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ],
+      "notes": "Corre a las 8am, 2 horas después de la ingesta (6am). Así siempre hay reseñas nuevas esperando."
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $vars.MASTER_SHEET_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Master",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/13R1d9RyIW2J7kXQE03xFm2aKulAHZI36lAF3dplD5q0/edit#gid=0"
+        },
+        "options": {}
+      },
+      "id": "8868ccd9-5c11-4a5b-9f51-f31a57230342",
+      "name": "Leer pendientes del Master",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.2,
+      "position": [
+        0,
+        144
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "OZdrd5yQwwuaHr6g",
+          "name": "Google Sheets account"
+        }
+      },
+      "notes": "Lee TODAS las filas. El filtro por estado_procesado = pendiente lo hace el Code node siguiente, que es más confiable que el filtro nativo de Google Sheets."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Filtrar solo las reseñas con estado_procesado = 'pendiente'\n// y construir batches de 20 para OpenAI\nconst items = $input.all();\n\nconst pendientes = items.filter(i =>\n  String(i.json.estado_procesado || '').trim().toLowerCase() === 'pendiente' &&\n  String(i.json.texto_original || '').trim().length > 5\n);\n\nconsole.log(`[VOC Análisis] Total filas: ${items.length} | Pendientes: ${pendientes.length}`);\n\nif (pendientes.length === 0) {\n  return [{ json: { _voc_empty: true, mensaje: 'Sin reseñas pendientes de análisis' } }];\n}\n\n// Construir batches de 20 (óptimo para gpt-4o-mini: costo vs contexto)\nconst BATCH_SIZE = 20;\nconst batches = [];\n\nfor (let i = 0; i < pendientes.length; i += BATCH_SIZE) {\n  const batch = pendientes.slice(i, i + BATCH_SIZE);\n  batches.push({\n    json: {\n      batch_index: Math.floor(i / BATCH_SIZE),\n      batch_total: Math.ceil(pendientes.length / BATCH_SIZE),\n      resenas: batch.map(item => ({\n        id:             item.json.id,\n        texto:          item.json.texto_original,\n        fuente:         item.json.fuente,\n        calificacion:   item.json.calificacion_estrella,\n        row_index:      item.json._rowIndex || null\n      }))\n    }\n  });\n}\n\nconsole.log(`[VOC Análisis] Batches creados: ${batches.length} (${BATCH_SIZE} reseñas c/u)`);\nreturn batches;\n"
+      },
+      "id": "c2bc8f1e-af38-4e74-b9c1-9e89b9a78bc7",
+      "name": "Filtrar pendientes + batching",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "voc-cond-empty",
+              "leftValue": false,
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "59e59fa7-bb69-4522-b7c0-1174a0e5ef04",
+      "name": "¿Hay pendientes?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        0,
+        432
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"gpt-4o-mini\",\n  \"temperature\": 0.1,\n  \"max_tokens\": 4000,\n  \"response_format\": { \"type\": \"json_object\" },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Eres un analista experto en Voice of Customer (VOC) especializado en centros de innovación y experiencia B2B en Latinoamérica. Analizas reseñas de LOGYCA/LAB.\\n\\nTu tarea es analizar un array de reseñas en formato JSON.\\n\\nDebes responder ÚNICAMENTE con un JSON válido con este schema exacto:\\n\\n{\\n  \\\"resultados\\\": [\\n    {\\n      \\\"id\\\": \\\"string\\\",\\n      \\\"idioma\\\": \\\"es | en | pt | otro\\\",\\n      \\\"sentimiento\\\": \\\"positivo | neutral | negativo\\\",\\n      \\\"categoria\\\": \\\"experiencia_espacio | calidad_contenido | tecnologia_demos | logistica_visita | valor_percibido | networking | atencion_equipo | otro\\\",\\n      \\\"score_urgencia\\\": 1,\\n      \\\"entidades_clave\\\": \\\"string\\\",\\n      \\\"resumen_ia\\\": \\\"máximo 12 palabras\\\",\\n      \\\"accion_sugerida\\\": \\\"máximo 15 palabras\\\"\\n    }\\n  ]\\n}\\n\\nResponde solo JSON.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"[{\\\"id\\\":\\\"233be25f484aa9c0\\\",\\\"texto\\\":\\\"Prueba desde Apps Script — la experiencia del LAB fue muy inspiradora para nuestro equipo.\\\",\\\"fuente\\\":\\\"google_forms\\\",\\\"calificacion\\\":5,\\\"row_index\\\":null}]\"\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "51636dcd-4f5e-417e-95e9-665ee2135226",
+      "name": "OpenAI — analizar batch",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        272,
+        560
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "ar4BSXuQu4WM96r1",
+          "name": "OpenAi account"
+        }
+      },
+      "notes": "CONFIGURAR CREDENTIAL: En n8n > Credentials > New > Header Auth:\n- Name: Authorization\n- Value: Bearer TU_API_KEY_DE_OPENAI\n\nModelo: gpt-4o-mini (balance perfecto costo/calidad para clasificación)\ntemperature: 0.1 (respuestas consistentes y reproducibles)\nresponse_format: json_object (garantiza JSON válido siempre)"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parsear respuesta de OpenAI y preparar updates para el Master Sheet\nconst response = $input.first().json;\n\n// Extraer el contenido del mensaje\nconst content = response.choices?.[0]?.message?.content;\nif (!content) {\n  throw new Error('[VOC OpenAI] Respuesta vacía de OpenAI: ' + JSON.stringify(response));\n}\n\n// Parsear JSON (response_format: json_object garantiza JSON válido)\nlet parsed;\ntry {\n  parsed = JSON.parse(content);\n} catch (e) {\n  throw new Error('[VOC OpenAI] Error parseando JSON: ' + content.substring(0, 200));\n}\n\nconst resultados = parsed.resultados || [];\nconsole.log(`[VOC OpenAI] Resultados parseados: ${resultados.length}`);\n\n// Construir un item por reseña analizada para actualizar el Master Sheet\nconst updates = resultados.map(r => ({\n  json: {\n    id:               r.id,\n    idioma:           r.idioma           || 'es',\n    sentimiento:      r.sentimiento      || 'neutral',\n    categoria:        r.categoria        || 'otro',\n    score_urgencia:   r.score_urgencia   || 1,\n    entidades_clave:  r.entidades_clave  || '',\n    resumen_ia:       r.resumen_ia       || '',\n    accion_sugerida:  r.accion_sugerida  || '',\n    estado_procesado: 'procesado',\n    // Metadata para el log\n    _tokens_usados:   response.usage?.total_tokens || 0\n  }\n}));\n\nconsole.log(`[VOC OpenAI] Updates listos: ${updates.length} | Tokens usados: ${response.usage?.total_tokens || 0}`);\nreturn updates;\n"
+      },
+      "id": "49ad60cf-4b9d-4834-9813-4e4af07c16b2",
+      "name": "Parsear respuesta OpenAI",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        272,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Encontrar el row number de cada reseña en el Master Sheet\n// para hacer el update en la fila correcta\nconst analizado = $input.first().json;\nconst masterItems = $('Leer pendientes del Master').all();\n\n// Buscar la fila que tiene el mismo id\nconst matchingRow = masterItems.find(row => row.json.id === analizado.id);\n\nif (!matchingRow) {\n  console.log(`[VOC Update] ID no encontrado en Master: ${analizado.id}`);\n  return [{ json: { ...analizado, _skip: true } }];\n}\n\n// n8n Google Sheets usa _rowIndex (1-based, fila 1 = headers)\n// El row number real = índice en el array + 2 (1 por header + 1 por 0-index)\nconst rowNumber = masterItems.indexOf(matchingRow) + 2;\n\nconsole.log(`[VOC Update] ID: ${analizado.id} → fila ${rowNumber}`);\n\nreturn [{\n  json: {\n    ...analizado,\n    _row_number: rowNumber\n  }\n}];\n"
+      },
+      "id": "c3cba1e3-baa7-4162-80d8-f94244a0c670",
+      "name": "Resolver fila en Master",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        272,
+        880
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "voc-cond-skip",
+              "leftValue": "={{ $json._skip }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "25337652-2672-413a-947c-7b8b252bac07",
+      "name": "¿Fila encontrada?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        272,
+        1024
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $vars.MASTER_SHEET_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Master",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "idioma": "={{ $json.idioma }}",
+            "sentimiento": "={{ $json.sentimiento }}",
+            "categoria": "={{ $json.categoria }}",
+            "score_urgencia": "={{ $json.score_urgencia }}",
+            "entidades_clave": "={{ $json.entidades_clave }}",
+            "resumen_ia": "={{ $json.resumen_ia }}",
+            "accion_sugerida": "={{ $json.accion_sugerida }}",
+            "id": "=={{ $json.id }}"
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "texto_original",
+              "displayName": "texto_original",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "idioma",
+              "displayName": "idioma",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "fuente",
+              "displayName": "fuente",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "plataforma",
+              "displayName": "plataforma",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "fecha_resena",
+              "displayName": "fecha_resena",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "fecha_ingesta",
+              "displayName": "fecha_ingesta",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "calificacion_estrella",
+              "displayName": "calificacion_estrella",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "autor",
+              "displayName": "autor",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "url_origen",
+              "displayName": "url_origen",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "estado_procesado",
+              "displayName": "estado_procesado",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "sentimiento",
+              "displayName": "sentimiento",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "categoria",
+              "displayName": "categoria",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "score_urgencia",
+              "displayName": "score_urgencia",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "entidades_clave",
+              "displayName": "entidades_clave",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "resumen_ia",
+              "displayName": "resumen_ia",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "accion_sugerida",
+              "displayName": "accion_sugerida",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "data",
+              "displayName": "data",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "cellFormat": "USER_ENTERED"
+        }
+      },
+      "id": "16973d55-fcf5-40bd-9ca7-8a4733bb8b71",
+      "name": "Actualizar Master Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.2,
+      "position": [
+        528,
+        1168
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "OZdrd5yQwwuaHr6g",
+          "name": "Google Sheets account"
+        }
+      },
+      "notes": "Usa matchingColumns: [id] para encontrar la fila exacta y actualizar solo los campos de IA. No toca texto_original ni datos de ingesta."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "voc-cond-urgencia",
+              "leftValue": "={{ $json.score_urgencia }}",
+              "rightValue": 4,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "6fa41c0b-b449-4c0f-a69c-df01c378f9ee",
+      "name": "¿Urgencia ≥ 4?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        528,
+        1328
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Enrutamiento de alertas por categoría para LOGYCA/LAB\n// Cada categoría va al responsable correcto\nconst item = $input.first().json;\n\nconst ROUTING = {\n  'experiencia_espacio':  { equipo: 'Coordinación del LAB',    canal: $vars.SLACK_WEBHOOK_URL },\n  'calidad_contenido':    { equipo: 'Equipo de Innovación',    canal: $vars.SLACK_WEBHOOK_URL },\n  'tecnologia_demos':     { equipo: 'Equipo Técnico del LAB',  canal: $vars.SLACK_WEBHOOK_URL },\n  'logistica_visita':     { equipo: 'Coordinación del LAB',    canal: $vars.SLACK_WEBHOOK_URL },\n  'valor_percibido':      { equipo: 'Equipo de Membresía',     canal: $vars.SLACK_WEBHOOK_URL },\n  'networking':           { equipo: 'Equipo de Comunidad',     canal: $vars.SLACK_WEBHOOK_URL },\n  'atencion_equipo':      { equipo: 'Coordinación RRHH',       canal: $vars.SLACK_WEBHOOK_URL },\n  'otro':                 { equipo: 'Coordinación del LAB',    canal: $vars.SLACK_WEBHOOK_URL }\n};\n\nconst ruta = ROUTING[item.categoria] || ROUTING['otro'];\n\n// Score visual\nconst scoreEmoji = item.score_urgencia >= 5 ? '🚨' : '⚠️';\nconst sentimientoEmoji = { positivo: '✅', neutral: '➖', negativo: '❌' }[item.sentimiento] || '➖';\n\nconst mensaje = {\n  text: `${scoreEmoji} *Alerta VOC — LOGYCA/LAB* ${scoreEmoji}`,\n  attachments: [\n    {\n      color: item.score_urgencia >= 5 ? '#E24B4A' : '#EF9F27',\n      fields: [\n        { title: 'Equipo responsable', value: ruta.equipo,            short: true  },\n        { title: 'Categoría',          value: item.categoria,         short: true  },\n        { title: 'Urgencia',           value: `${item.score_urgencia}/5`, short: true },\n        { title: 'Sentimiento',        value: `${sentimientoEmoji} ${item.sentimiento}`, short: true },\n        { title: 'Resumen IA',         value: item.resumen_ia,        short: false },\n        { title: 'Acción sugerida',    value: item.accion_sugerida,   short: false },\n        { title: 'Entidades mencionadas', value: item.entidades_clave || 'Ninguna', short: false }\n      ],\n      footer: 'VOC Pipeline · LOGYCA/LAB · Análisis automático',\n      ts: Math.floor(Date.now() / 1000)\n    }\n  ]\n};\n\nreturn [{ json: { mensaje, webhook_url: ruta.canal, categoria: item.categoria, equipo: ruta.equipo } }];\n"
+      },
+      "id": "388795b6-f6d7-4e0c-b65a-e887ca03db11",
+      "name": "Construir alerta enrutada",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        784,
+        1472
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.webhook_url }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.mensaje) }}",
+        "options": {}
+      },
+      "id": "35699cdd-396a-4ecb-893d-bf8e40a2026a",
+      "name": "Enviar alerta Slack",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        784,
+        1600
+      ],
+      "notes": "Envía al canal de Slack configurado en SLACK_WEBHOOK_URL. Para producción, puedes crear múltiples variables (SLACK_WEBHOOK_LAB, SLACK_WEBHOOK_TECH, etc.) y enrutar a canales diferentes por categoría."
+    },
+    {
+      "parameters": {},
+      "id": "34d4f65f-0520-4a26-b0cf-51fa2b0281d8",
+      "name": "Sin urgencia — OK",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        528,
+        1472
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "d49be66b-2d00-4514-9c4a-283e71469dcc",
+      "name": "Sin pendientes — OK",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -256,
+        560
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Scheduler — 8am diario": {
+      "main": [
+        [
+          {
+            "node": "Leer pendientes del Master",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer pendientes del Master": {
+      "main": [
+        [
+          {
+            "node": "Filtrar pendientes + batching",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filtrar pendientes + batching": {
+      "main": [
+        [
+          {
+            "node": "¿Hay pendientes?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Hay pendientes?": {
+      "main": [
+        [
+          {
+            "node": "OpenAI — analizar batch",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Sin pendientes — OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI — analizar batch": {
+      "main": [
+        [
+          {
+            "node": "Parsear respuesta OpenAI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parsear respuesta OpenAI": {
+      "main": [
+        [
+          {
+            "node": "Resolver fila en Master",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolver fila en Master": {
+      "main": [
+        [
+          {
+            "node": "¿Fila encontrada?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Fila encontrada?": {
+      "main": [
+        [
+          {
+            "node": "Actualizar Master Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Sin pendientes — OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Actualizar Master Sheet": {
+      "main": [
+        [
+          {
+            "node": "¿Urgencia ≥ 4?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Urgencia ≥ 4?": {
+      "main": [
+        [
+          {
+            "node": "Construir alerta enrutada",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Sin urgencia — OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Construir alerta enrutada": {
+      "main": [
+        [
+          {
+            "node": "Enviar alerta Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "e778647a-68f0-4f51-8064-2c9a37b935ec",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "d7fb725aa26fcdd535441f501349b5859fa1393993dfddbd6bc77a8d3d0c5c4d"
+  },
+  "id": "yMlM1Y6aj5pgSkpj",
+  "tags": [
+    {
+      "updatedAt": "2026-03-27T17:00:02.870Z",
+      "createdAt": "2026-03-27T17:00:02.870Z",
+      "id": "81UtELt555ETtq4r",
+      "name": "Análisis IA"
+    },
+    {
+      "updatedAt": "2026-03-26T16:45:49.527Z",
+      "createdAt": "2026-03-26T16:45:49.527Z",
+      "id": "VNJ4Df5pYShkeJTV",
+      "name": "VOC Pipeline"
+    }
+  ]
+}

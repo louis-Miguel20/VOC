@@ -1,0 +1,128 @@
+{
+  "name": "VOC Pipeline — 06 Reporte Semanal + Email",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "cronExpression", "expression": "0 9 * * 1" }]
+        }
+      },
+      "id": "voc06-node-0001",
+      "name": "Scheduler — Lunes 9am",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [260, 80],
+      "notes": "Cada lunes a las 9am genera y envía el reporte semanal."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.WEBHOOK_TRIGGER_PYTHON }}",
+        "options": {}
+      },
+      "id": "voc06-node-0002",
+      "name": "Trigger Python — voc_analysis",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [260, 220],
+      "notes": "ALTERNATIVA SI NO TIENES SERVIDOR:\nSi corres Python localmente, elimina este nodo y\nusa el Task Scheduler de Windows para correr\nrun_voc.bat antes de las 9am del lunes.\n\nSI TIENES UN SERVIDOR:\nConfigura un endpoint simple con Flask que ejecute\nel script y devuelva 200 OK."
+    },
+    {
+      "parameters": {
+        "amount": 30,
+        "unit": "seconds"
+      },
+      "id": "voc06-node-0003",
+      "name": "Esperar generación",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [260, 360]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $vars.MASTER_SHEET_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Master",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "voc06-node-0004",
+      "name": "Leer Master para resumen",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.2,
+      "position": [260, 500],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REEMPLAZAR_CON_TU_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Calcular KPIs del resumen ejecutivo para el email\nconst items = $input.all();\nconst procesadas = items.filter(i => i.json.estado_procesado === 'procesado');\n\nconst total = procesadas.length;\nconst positivos = procesadas.filter(i => i.json.sentimiento === 'positivo').length;\nconst negativos = procesadas.filter(i => i.json.sentimiento === 'negativo').length;\nconst alertas   = procesadas.filter(i => Number(i.json.score_urgencia) >= 4).length;\n\nconst ratings = procesadas\n  .map(i => parseFloat(i.json.calificacion_estrella))\n  .filter(r => !isNaN(r) && r > 0);\n\nconst avgRating = ratings.length > 0\n  ? (ratings.reduce((a, b) => a + b, 0) / ratings.length).toFixed(1)\n  : null;\n\nconst promotores  = ratings.filter(r => r === 5).length;\nconst detractores = ratings.filter(r => r <= 2).length;\nconst nps = ratings.length > 0\n  ? Math.round(((promotores - detractores) / ratings.length) * 100)\n  : null;\n\nconst tasaPositiva = total > 0 ? Math.round((positivos / total) * 100) : 0;\n\n// Semana actual\nconst hoy    = new Date();\nconst lunes  = new Date(hoy);\nlunes.setDate(hoy.getDate() - hoy.getDay() + 1);\nconst domingo = new Date(lunes);\ndomingo.setDate(lunes.getDate() + 6);\nconst semana = `${lunes.toLocaleDateString('es-CO')} – ${domingo.toLocaleDateString('es-CO')}`;\n\n// Top categorías negativas\nconst catNeg = {};\nprocessadas.filter(i => i.json.sentimiento === 'negativo').forEach(i => {\n  const cat = i.json.categoria || 'otro';\n  catNeg[cat] = (catNeg[cat] || 0) + 1;\n});\nconst topNeg = Object.entries(catNeg)\n  .sort((a, b) => b[1] - a[1])\n  .slice(0, 3)\n  .map(([cat, n]) => `${cat} (${n})`);\n\n// Alertas críticas para el email\nconst alertasDetalle = procesadas\n  .filter(i => Number(i.json.score_urgencia) >= 4)\n  .sort((a, b) => Number(b.json.score_urgencia) - Number(a.json.score_urgencia))\n  .slice(0, 5)\n  .map(i => ({\n    resumen:  i.json.resumen_ia,\n    accion:   i.json.accion_sugerida,\n    categoria: i.json.categoria,\n    score:    i.json.score_urgencia,\n    fuente:   i.json.fuente\n  }));\n\nconsole.log(`[VOC Email] Total: ${total} | NPS: ${nps} | Alertas: ${alertas}`);\n\nreturn [{\n  json: {\n    semana,\n    total,\n    positivos,\n    negativos,\n    tasaPositiva,\n    nps,\n    avgRating,\n    alertas,\n    topNeg,\n    alertasDetalle,\n    fecha: new Date().toLocaleDateString('es-CO', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })\n  }\n}];\n"
+      },
+      "id": "voc06-node-0005",
+      "name": "Calcular KPIs del email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [260, 660]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $vars.EMAIL_CEO }};={{ $vars.EMAIL_MARKETING }};={{ $vars.EMAIL_OPERACIONES }}",
+        "subject": "=📊 VOC Report LOGYCA/LAB — Semana {{ $json.semana }}",
+        "emailType": "html",
+        "message": "=<!DOCTYPE html>\n<html>\n<head>\n<meta charset='UTF-8'>\n<style>\nbody { font-family: Arial, sans-serif; background: #f4f4f4; margin: 0; padding: 0; }\n.container { max-width: 620px; margin: 0 auto; background: white; }\n.header { background: #6C5CE7; padding: 32px 30px; }\n.header h1 { color: white; margin: 0; font-size: 24px; }\n.header p { color: #DDD6FE; margin: 6px 0 0; font-size: 14px; }\n.kpis { display: flex; padding: 24px 20px; gap: 12px; background: #f8f9fa; }\n.kpi { flex: 1; text-align: center; background: white; border-radius: 8px; padding: 16px 8px; border: 1px solid #e0e0e0; }\n.kpi .val { font-size: 28px; font-weight: bold; color: #4A3DB5; }\n.kpi .lbl { font-size: 11px; color: #636e72; margin-top: 4px; }\n.section { padding: 20px 30px; }\n.section h2 { color: #4A3DB5; font-size: 15px; border-bottom: 2px solid #6C5CE7; padding-bottom: 6px; }\n.alerta { background: #fff5f5; border-left: 4px solid #E24B4A; padding: 12px 16px; margin-bottom: 10px; border-radius: 4px; }\n.alerta .cat { font-size: 11px; font-weight: bold; color: #E24B4A; text-transform: uppercase; }\n.alerta .res { font-size: 13px; color: #2d3436; margin: 4px 0; }\n.alerta .acc { font-size: 12px; color: #4A3DB5; font-weight: bold; }\n.footer { background: #6C5CE7; padding: 16px 30px; text-align: center; }\n.footer p { color: #DDD6FE; font-size: 11px; margin: 0; }\n.btn { display: inline-block; background: white; color: #4A3DB5; padding: 10px 24px; border-radius: 6px; font-weight: bold; text-decoration: none; margin-top: 12px; font-size: 13px; }\n</style>\n</head>\n<body>\n<div class='container'>\n  <div class='header'>\n    <h1>📊 VOC Report Semanal</h1>\n    <p>LOGYCA / LAB &nbsp;·&nbsp; {{ $json.semana }}</p>\n  </div>\n\n  <div class='kpis'>\n    <div class='kpi'><div class='val'>{{ $json.total }}</div><div class='lbl'>Total reseñas</div></div>\n    <div class='kpi'><div class='val'>{{ $json.nps !== null ? $json.nps : 'N/A' }}</div><div class='lbl'>NPS estimado</div></div>\n    <div class='kpi'><div class='val'>{{ $json.tasaPositiva }}%</div><div class='lbl'>Tasa positiva</div></div>\n    <div class='kpi'><div class='val' style='color: {{ $json.alertas > 0 ? \"#E24B4A\" : \"#00B894\" }}'>{{ $json.alertas }}</div><div class='lbl'>Alertas activas</div></div>\n  </div>\n\n  <div class='section'>\n    <h2>Categorías con más menciones negativas</h2>\n    <p style='color: #636e72; font-size: 13px;'>{{ $json.topNeg.length > 0 ? $json.topNeg.join(\" &nbsp;·&nbsp; \") : \"Sin menciones negativas esta semana ✓\" }}</p>\n  </div>\n\n  {{ $json.alertas > 0 ? `\n  <div class='section'>\n    <h2>⚠ Alertas críticas — Acción requerida</h2>\n    ${$json.alertasDetalle.map(a => `\n    <div class='alerta'>\n      <div class='cat'>${a.categoria} &nbsp;·&nbsp; Urgencia ${a.score}/5 &nbsp;·&nbsp; ${a.fuente}</div>\n      <div class='res'>${a.resumen}</div>\n      <div class='acc'>👉 ${a.accion}</div>\n    </div>`).join('')}\n  </div>` : `\n  <div class='section'>\n    <p style='color: #00B894; font-weight: bold;'>✓ Sin alertas críticas esta semana.</p>\n  </div>` }}\n\n  <div class='section' style='text-align: center; padding-bottom: 30px;'>\n    <p style='color: #636e72; font-size: 13px;'>El reporte PDF completo con análisis detallado está disponible en el dashboard.</p>\n    <a href='{{ $vars.DASHBOARD_URL || \"#\" }}' class='btn'>Ver dashboard completo →</a>\n  </div>\n\n  <div class='footer'>\n    <p>VOC Pipeline · LOGYCA/LAB · Análisis automático con IA · {{ $json.fecha }}</p>\n  </div>\n</div>\n</body>\n</html>",
+        "options": {}
+      },
+      "id": "voc06-node-0006",
+      "name": "Enviar email semanal",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [260, 820],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REEMPLAZAR_CON_TU_GMAIL_CREDENTIAL_ID",
+          "name": "Gmail account"
+        }
+      },
+      "notes": "CONFIGURAR:\n1. En n8n > Credentials > New > Gmail OAuth2\n2. Variables a crear:\n   - EMAIL_CEO: email del CEO\n   - EMAIL_MARKETING: email de marketing\n   - EMAIL_OPERACIONES: email de operaciones\n   - DASHBOARD_URL: URL pública del dashboard Streamlit"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $vars.SLACK_WEBHOOK_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": \"📊 *Reporte VOC Semanal enviado — LOGYCA/LAB*\",\n  \"attachments\": [{\n    \"color\": \"#6C5CE7\",\n    \"fields\": [\n      { \"title\": \"Semana\",        \"value\": \"{{ $('Calcular KPIs del email').first().json.semana }}\", \"short\": true },\n      { \"title\": \"Total reseñas\", \"value\": \"{{ $('Calcular KPIs del email').first().json.total }}\",  \"short\": true },\n      { \"title\": \"NPS estimado\",  \"value\": \"{{ $('Calcular KPIs del email').first().json.nps }}\",   \"short\": true },\n      { \"title\": \"Alertas\",       \"value\": \"{{ $('Calcular KPIs del email').first().json.alertas }}\", \"short\": true }\n    ],\n    \"footer\": \"VOC Pipeline automático\"\n  }]\n}",
+        "options": {}
+      },
+      "id": "voc06-node-0007",
+      "name": "Notificar Slack — reporte enviado",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [260, 980]
+    }
+  ],
+  "connections": {
+    "Scheduler — Lunes 9am":       { "main": [[{ "node": "Trigger Python — voc_analysis", "type": "main", "index": 0 }]] },
+    "Trigger Python — voc_analysis":{ "main": [[{ "node": "Esperar generación",           "type": "main", "index": 0 }]] },
+    "Esperar generación":           { "main": [[{ "node": "Leer Master para resumen",      "type": "main", "index": 0 }]] },
+    "Leer Master para resumen":     { "main": [[{ "node": "Calcular KPIs del email",       "type": "main", "index": 0 }]] },
+    "Calcular KPIs del email":      { "main": [[{ "node": "Enviar email semanal",          "type": "main", "index": 0 }]] },
+    "Enviar email semanal":         { "main": [[{ "node": "Notificar Slack — reporte enviado", "type": "main", "index": 0 }]] }
+  },
+  "pinData": {},
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "VOC Pipeline" }, { "name": "Reporte" }],
+  "active": false,
+  "id": "voc-pipeline-06-reporte"
+}
