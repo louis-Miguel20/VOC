@@ -1,12 +1,15 @@
 """
-VOC Pipeline — Etapa 4: Análisis Python + Pandas
-LOGYCA / LAB
+VOC Pipeline — Motor de Análisis de Datos (NLP + Pandas)
 
-Corre semanalmente (orquestado por n8n o manualmente).
-Lee el Master Sheet, calcula KPIs, detecta tendencias
-y genera el JSON de insumo para el dashboard y el PDF.
+Este módulo es el núcleo del procesamiento del sistema Voice of Customer (VOC).
+Se encarga de:
+1. Conectar con las fuentes de datos (Google Sheets/Master Sheet).
+2. Limpiar y normalizar los datos crudos.
+3. Calcular KPIs estratégicos (NPS, Sentimiento, Urgencia).
+4. Generar análisis de tendencias temporales y por categoría.
+5. Exportar los resultados a un formato JSON optimizado para el dashboard y reportes.
 
-Output: voc_analysis_output.json en el mismo directorio
+Output: voc_analysis_output.json
 """
 
 import json
@@ -22,34 +25,34 @@ from google.oauth2.service_account import Credentials
 warnings.filterwarnings("ignore")
 
 # ============================================================
-# CONFIGURACIÓN
+# CONFIGURACIÓN GLOBAL
 # ============================================================
 MASTER_SHEET_ID  = os.environ.get("MASTER_SHEET_ID", "TU_MASTER_SHEET_ID")
 CREDENTIALS_FILE = os.environ.get("GOOGLE_CREDENTIALS_FILE", "credentials.json")
 OUTPUT_FILE      = Path(__file__).parent / "voc_analysis_output.json"
-PLATAFORMA       = "LOGYCA / LAB"
+PLATAFORMA       = "VOC Intelligence System"
 
-# Categorías válidas para LOGYCA/LAB
+# Categorías de análisis para segmentación del feedback
 CATEGORIAS_VALIDAS = [
-    "experiencia_espacio",
-    "calidad_contenido",
-    "tecnologia_demos",
-    "logistica_visita",
-    "valor_percibido",
-    "networking",
-    "atencion_equipo",
+    "experiencia_cliente",
+    "calidad_producto",
+    "soporte_tecnico",
+    "logistica_entrega",
+    "valor_precio",
+    "usabilidad",
+    "atencion_cliente",
     "otro"
 ]
 
 CATEGORIAS_LABELS = {
-    "experiencia_espacio": "Espacio físico",
-    "calidad_contenido":   "Calidad del contenido",
-    "tecnologia_demos":    "Tecnología y demos",
-    "logistica_visita":    "Logística de visita",
-    "valor_percibido":     "Valor percibido",
-    "networking":          "Networking",
-    "atencion_equipo":     "Atención del equipo",
-    "otro":                "Otro"
+    "experiencia_cliente": "Experiencia General",
+    "calidad_producto":    "Calidad de Producto/Servicio",
+    "soporte_tecnico":     "Soporte Técnico",
+    "logistica_entrega":   "Logística y Entrega",
+    "valor_precio":        "Valor Percibido",
+    "usabilidad":          "Interfaz y Usabilidad",
+    "atencion_cliente":    "Atención al Cliente",
+    "otro":                "Otros Temas"
 }
 
 
@@ -379,7 +382,7 @@ def resenas_recientes(df, n=20):
 # ============================================================
 def main():
     print(f"\n{'='*50}")
-    print(f"VOC Pipeline — Análisis LOGYCA/LAB")
+    print(f"VOC Pipeline — Motor de Inteligencia")
     print(f"Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     print(f"{'='*50}\n")
 

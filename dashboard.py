@@ -1,9 +1,11 @@
 """
-VOC Pipeline — Etapa 5: Dashboard Streamlit
-LOGYCA / LAB
+VOC Pipeline — Dashboard Interactivo (Streamlit)
+
+Este módulo implementa la interfaz de usuario para la visualización de datos
+de la "Voz del Cliente" (VOC). Proporciona una vista analítica y operativa
+de los sentimientos, categorías y alertas críticas procesadas.
 
 Ejecutar: streamlit run dashboard.py
-Deploy gratis: streamlit.io/cloud
 """
 
 import json
@@ -117,7 +119,7 @@ def style_figure(fig, height, title=None, legend_orientation="h", legend_y=-0.18
 # CONFIGURACIÓN DE PÁGINA
 # ============================================================
 st.set_page_config(
-    page_title="VOC Dashboard — LOGYCA/LAB",
+    page_title="VOC Intelligence Dashboard",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -461,10 +463,9 @@ def delta_str(val):
 with st.sidebar:
     st.markdown("""
     <div class="sidebar-brand">
-        <img src="https://logyca.org/sites/default/files/inline-images/logo-logyca-lab.png" alt="LOGYCA / LAB">
-        <div class="sidebar-kicker">Insights Center</div>
-        <div class="sidebar-title">VOC Dashboard</div>
-        <div class="sidebar-copy">Monitorea experiencia, riesgo reputacional y señales accionables desde una sola vista.</div>
+        <div class="sidebar-kicker">Intelligence Center</div>
+        <div class="sidebar-title">VOC Analytics</div>
+        <div class="sidebar-copy">Transformando el feedback disperso en insights estratégicos y señales accionables.</div>
     </div>
     """, unsafe_allow_html=True)
     st.divider()
@@ -881,4 +882,4 @@ elif vista == "Explorador de reseñas":
 # FOOTER
 # ============================================================
 st.divider()
-st.caption("VOC Pipeline · LOGYCA/LAB · Análisis automático con IA · Datos actualizados diariamente")
+st.caption("VOC Intelligence System · Análisis de Datos con IA · Generado por el Motor de Análisis NLP")

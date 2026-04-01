@@ -1,16 +1,15 @@
 """
-VOC Pipeline — Etapa 6: Generador de Reporte PDF Semanal
-LOGYCA / LAB
+VOC Pipeline — Generador de Reportes Ejecutivos (PDF)
 
-Genera un reporte PDF profesional de 5 secciones a partir
-del voc_analysis_output.json.
+Este módulo automatiza la creación de informes profesionales en formato PDF
+utilizando los datos procesados por el motor de análisis. El reporte incluye:
+1. Resumen de KPIs globales (NPS, Sentimiento, Volumen).
+2. Análisis de tendencias semanales.
+3. Panel de problemas críticos (Alertas).
+4. Desglose detallado por categoría.
+5. Entidades clave y muestra de feedback.
 
-Uso:
-    python generate_report.py
-    python generate_report.py --output reporte_semana_13.pdf
-
-Dependencias:
-    pip install reportlab
+Dependencias: reportlab
 """
 
 import json
@@ -32,18 +31,18 @@ from reportlab.graphics.shapes import Drawing, Rect, String
 from reportlab.graphics import renderPDF
 
 # ============================================================
-# COLORES LOGYCA
+# PALETA DE COLORES PROFESIONAL
 # ============================================================
-PURPLE      = HexColor('#6C5CE7')
-PURPLE_DARK = HexColor('#4A3DB5')
-PURPLE_LIGHT= HexColor('#EEEDfe')
-RED         = HexColor('#E24B4A')
-GREEN       = HexColor('#00B894')
-AMBER       = HexColor('#EF9F27')
-GRAY_DARK   = HexColor('#2d3436')
-GRAY_MID    = HexColor('#636e72')
-GRAY_LIGHT  = HexColor('#f8f9fa')
-BORDER      = HexColor('#e0e0e0')
+PRIMARY      = HexColor('#247BA0')
+PRIMARY_DARK = HexColor('#19586F')
+PRIMARY_LIGHT= HexColor('#E8F4F8')
+RED          = HexColor('#FF1654')
+GREEN        = HexColor('#2E8D7E')
+AMBER        = HexColor('#EF9F27')
+GRAY_DARK    = HexColor('#173241')
+GRAY_MID     = HexColor('#557280')
+GRAY_LIGHT   = HexColor('#F4FBF8')
+BORDER       = HexColor('#D1E5E4')
 
 # ============================================================
 # ESTILOS
@@ -72,7 +71,7 @@ def crear_estilos():
             'kpi_valor',
             fontName='Helvetica-Bold',
             fontSize=32,
-            textColor=PURPLE_DARK,
+            textColor=PRIMARY_DARK,
             alignment=TA_CENTER,
             leading=38
         ),
@@ -88,7 +87,7 @@ def crear_estilos():
             'section_header',
             fontName='Helvetica-Bold',
             fontSize=14,
-            textColor=PURPLE_DARK,
+            textColor=PRIMARY_DARK,
             leading=18,
             spaceBefore=16,
             spaceAfter=8
@@ -126,7 +125,7 @@ def crear_estilos():
             'accion',
             fontName='Helvetica-Bold',
             fontSize=9,
-            textColor=HexColor('#4A3DB5'),
+            textColor=PRIMARY_DARK,
             leading=13
         ),
         'footer': ParagraphStyle(
@@ -197,7 +196,7 @@ def barra_menciones(valor, maximo, ancho=200, altura=14):
     d = Drawing(ancho, altura)
     d.add(Rect(0, 2, ancho, 10, fillColor=GRAY_LIGHT, strokeColor=None))
     if pct > 0:
-        d.add(Rect(0, 2, pct, 10, fillColor=PURPLE, strokeColor=None))
+        d.add(Rect(0, 2, pct, 10, fillColor=PRIMARY, strokeColor=None))
     return d
 
 
@@ -227,7 +226,7 @@ def semana_actual():
 # ============================================================
 
 def portada(datos, estilos, story, ancho_pagina, alto_pagina):
-    """Portada con fondo morado y KPIs clave."""
+    """Portada con fondo corporativo y KPIs clave."""
     kpis = datos.get('kpis_globales', {})
     meta = datos.get('metadata', {})
     comp = datos.get('comparativa_semanal', {})
@@ -235,29 +234,29 @@ def portada(datos, estilos, story, ancho_pagina, alto_pagina):
 
     fecha = datetime.fromisoformat(meta.get('fecha_analisis', datetime.now().isoformat()))
 
-    # Tabla de portada (fondo morado simulado con tabla)
+    # Tabla de portada
     portada_data = [[
-        Paragraph('VOC Report', estilos['titulo_portada']),
+        Paragraph('VOC Intelligence Report', estilos['titulo_portada']),
     ]]
     portada_tabla = Table(portada_data, colWidths=[ancho_pagina - 4*cm])
     portada_tabla.setStyle(TableStyle([
-        ('BACKGROUND',  (0,0), (-1,-1), PURPLE),
+        ('BACKGROUND',  (0,0), (-1,-1), PRIMARY),
         ('TOPPADDING',  (0,0), (-1,-1), 40),
         ('BOTTOMPADDING',(0,0),(-1,-1), 20),
         ('LEFTPADDING', (0,0), (-1,-1), 30),
         ('RIGHTPADDING',(0,0), (-1,-1), 30),
-        ('ROWBACKGROUNDS', (0,0), (-1,-1), [PURPLE]),
+        ('ROWBACKGROUNDS', (0,0), (-1,-1), [PRIMARY]),
     ]))
     story.append(portada_tabla)
 
     # Subtítulo
     info_data = [[
-        Paragraph('LOGYCA / LAB', estilos['subtitulo_portada']),
+        Paragraph('Insights & Analytics Center', estilos['subtitulo_portada']),
         Paragraph(f"Semana {semana_actual()}", estilos['subtitulo_portada']),
     ]]
     info_tabla = Table(info_data, colWidths=[(ancho_pagina - 4*cm)/2]*2)
     info_tabla.setStyle(TableStyle([
-        ('BACKGROUND',   (0,0), (-1,-1), PURPLE_DARK),
+        ('BACKGROUND',   (0,0), (-1,-1), PRIMARY_DARK),
         ('TOPPADDING',   (0,0), (-1,-1), 12),
         ('BOTTOMPADDING',(0,0), (-1,-1), 16),
         ('LEFTPADDING',  (0,0), (-1,-1), 30),
@@ -321,9 +320,9 @@ def portada(datos, estilos, story, ancho_pagina, alto_pagina):
 
 
 def seccion_tendencias(datos, estilos, story):
-    """Sección 2 — Tendencias para Marketing."""
+    """Sección 2 — Tendencias para Estrategia."""
     story.append(PageBreak())
-    story.append(HRFlowable(width="100%", thickness=2, color=PURPLE, spaceAfter=8))
+    story.append(HRFlowable(width="100%", thickness=2, color=PRIMARY, spaceAfter=8))
     story.append(Paragraph('2. Tendencias y evolución semanal', estilos['section_header']))
     story.append(Paragraph(
         'Análisis de evolución del sentimiento semana a semana. '
@@ -354,7 +353,7 @@ def seccion_tendencias(datos, estilos, story):
 
         tabla = Table(tabla_data, colWidths=[120, 60, 80, 70, 70])
         tabla.setStyle(TableStyle([
-            ('BACKGROUND',    (0,0), (-1,0), PURPLE),
+            ('BACKGROUND',    (0,0), (-1,0), PRIMARY),
             ('ROWBACKGROUNDS',(0,1), (-1,-1), [white, GRAY_LIGHT]),
             ('BOX',           (0,0), (-1,-1), 0.5, BORDER),
             ('INNERGRID',     (0,0), (-1,-1), 0.5, BORDER),
@@ -451,9 +450,9 @@ def seccion_alertas(datos, estilos, story):
 
 
 def seccion_categorias(datos, estilos, story):
-    """Sección 4 — Detalle por categoría para Producto."""
+    """Sección 4 — Detalle por categoría."""
     story.append(PageBreak())
-    story.append(HRFlowable(width="100%", thickness=2, color=PURPLE, spaceAfter=8))
+    story.append(HRFlowable(width="100%", thickness=2, color=PRIMARY, spaceAfter=8))
     story.append(Paragraph('4. Análisis por categoría', estilos['section_header']))
 
     categorias = datos.get('por_categoria', [])
@@ -479,7 +478,7 @@ def seccion_categorias(datos, estilos, story):
     col_widths = [110, 40, 60, 60, 60, 70, 60]
     tabla = Table(tabla_data, colWidths=col_widths)
     tabla.setStyle(TableStyle([
-        ('BACKGROUND',    (0,0),  (-1,0),  PURPLE),
+        ('BACKGROUND',    (0,0),  (-1,0),  PRIMARY),
         ('ROWBACKGROUNDS',(0,1),  (-1,-1), [white, GRAY_LIGHT]),
         ('BOX',           (0,0),  (-1,-1), 0.5, BORDER),
         ('INNERGRID',     (0,0),  (-1,-1), 0.5, BORDER),
@@ -506,9 +505,9 @@ def seccion_categorias(datos, estilos, story):
 
 
 def seccion_entidades(datos, estilos, story):
-    """Sección 5 — Entidades más mencionadas y muestra de reseñas."""
+    """Sección 5 — Entidades clave y muestra de reseñas."""
     story.append(PageBreak())
-    story.append(HRFlowable(width="100%", thickness=2, color=PURPLE, spaceAfter=8))
+    story.append(HRFlowable(width="100%", thickness=2, color=PRIMARY, spaceAfter=8))
     story.append(Paragraph('5. Entidades clave y reseñas recientes', estilos['section_header']))
 
     entidades = datos.get('top_entidades', [])
@@ -578,7 +577,7 @@ def generar_pdf(input_file='voc_analysis_output.json', output_file=None):
 
     if output_file is None:
         fecha = datetime.now().strftime('%Y_W%V')
-        output_file = f"VOC_Report_LOGYCA_LAB_{fecha}.pdf"
+        output_file = f"VOC_Intelligence_Report_{fecha}.pdf"
 
     output_path = Path(input_path.parent) / output_file
 
@@ -589,9 +588,9 @@ def generar_pdf(input_file='voc_analysis_output.json', output_file=None):
         leftMargin=2*cm,
         topMargin=2*cm,
         bottomMargin=2*cm,
-        title=f"VOC Report — LOGYCA/LAB",
-        author="VOC Pipeline Automatizado",
-        subject="Reporte semanal de Voice of Customer"
+        title=f"VOC Intelligence Report",
+        author="VOC Intelligence Pipeline",
+        subject="Reporte ejecutivo de Voice of Customer"
     )
 
     ancho, alto = A4
@@ -611,7 +610,7 @@ def generar_pdf(input_file='voc_analysis_output.json', output_file=None):
         canvas.setFillColor(GRAY_MID)
         canvas.drawCentredString(
             ancho / 2, 1.2*cm,
-            f"VOC Pipeline · LOGYCA/LAB · Generado el {datetime.now().strftime('%d/%m/%Y %H:%M')} · Página {doc.page}"
+            f"VOC Intelligence Pipeline · Generado el {datetime.now().strftime('%d/%m/%Y %H:%M')} · Página {doc.page}"
         )
         canvas.restoreState()
 
@@ -622,7 +621,7 @@ def generar_pdf(input_file='voc_analysis_output.json', output_file=None):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Generar reporte PDF VOC LOGYCA/LAB')
+    parser = argparse.ArgumentParser(description='Generar reporte PDF VOC Intelligence')
     parser.add_argument('--input',  default='voc_analysis_output.json')
     parser.add_argument('--output', default=None)
     args = parser.parse_args()
